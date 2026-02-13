@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	soniox "github.com/moxierobots/soniox-speech-to-text-go"
+	soniox "github.com/moxierobots/soniox-stt-go"
 )
 
 func main() {
