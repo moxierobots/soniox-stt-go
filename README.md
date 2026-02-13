@@ -17,7 +17,7 @@
 ## Installation
 
 ```bash
-go get github.com/moxierobots/soniox-speech-to-text-go
+go get github.com/moxierobots/soniox-stt-go
 ```
 
 ## Quick Start
@@ -30,7 +30,7 @@ import (
     "fmt"
     "log"
 
-    soniox "github.com/moxierobots/soniox-speech-to-text-go"
+    soniox "github.com/moxierobots/soniox-stt-go"
 )
 
 func main() {
@@ -314,7 +314,7 @@ go run main.go -api-key YOUR_API_KEY -file audio.wav -target en
 For complete API documentation, see:
 - [Soniox Documentation](https://soniox.com/docs)
 - [WebSocket API Reference](https://soniox.com/docs/stt/api-reference/websocket-api)
-- [Go Package Documentation](https://pkg.go.dev/github.com/moxierobots/soniox-speech-to-text-go)
+- [Go Package Documentation](https://pkg.go.dev/github.com/moxierobots/soniox-stt-go)
 
 ## License
 

@@ -20,7 +20,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	soniox "github.com/moxierobots/soniox-speech-to-text-go"
+	soniox "github.com/moxierobots/soniox-stt-go"
 )
 
 // Note: This is a skeleton example. For actual microphone capture,

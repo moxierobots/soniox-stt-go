@@ -1,4 +1,4 @@
-module github.com/moxierobots/soniox-speech-to-text-go
+module github.com/moxierobots/soniox-stt-go
 
 go 1.21
 
