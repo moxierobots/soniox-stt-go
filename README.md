@@ -2,7 +2,9 @@
 
 **Unofficial** Go SDK for the [Soniox Speech-to-Text](https://soniox.com) real-time WebSocket API. Enable real-time speech-to-text transcription and translation in your Go applications.
 
-> **Note:** This is an unofficial SDK maintained by Moxie Robots Inc. For the official Node.js SDK, see [@soniox/node](https://github.com/soniox/soniox-js).
+> **Reference SDK:** This SDK is built to be feature-compatible with the official server-side Node.js SDK [`@soniox/node`](https://github.com/soniox/soniox-js) (specifically the `packages/node/src/realtime/` module). API surface, event semantics, error mapping, and special token handling all match the Node.js SDK behavior.
+>
+> **Note:** The older [`soniox/soniox-node`](https://github.com/soniox/soniox-node) repo is archived and should not be used. The current official SDK lives at **[github.com/soniox/soniox-js](https://github.com/soniox/soniox-js)**.
 
 ## Feature Comparison with Official Node SDK
 
@@ -12,15 +14,21 @@
 | Pause / Resume | ✅ | ✅ |
 | Keep-alive | ✅ | ✅ |
 | SendStream (`io.Reader`) | ✅ | ✅ |
-| Finalize | ✅ | ✅ |
+| Finalize (with trailing silence) | ✅ | ✅ |
 | Speaker diarization | ✅ | ✅ |
 | Language identification | ✅ | ✅ |
-| Endpoint detection | ✅ | ✅ |
+| Endpoint detection (`<end>` → `OnEndpoint`) | ✅ | ✅ |
+| Finalized event (`<fin>` → `OnFinalized`) | ✅ | ✅ |
+| Max endpoint delay (`max_endpoint_delay_ms`) | ✅ | ✅ |
+| Per-token callback (`OnToken`) | ✅ | ✅ |
+| Disconnected event (`OnDisconnected`) | ✅ | ✅ |
+| Typed error mapping (auth, quota, etc.) | ✅ | ✅ |
+| Special token filtering (`<end>`, `<fin>`) | ✅ | ✅ |
 | Real-time translation (one-way & two-way) | ✅ | ✅ |
 | Domain-specific context | ✅ | ✅ |
 | Language hints (strict mode) | ✅ | ✅ |
-| Special token filtering (`<end>`, `<fin>`) | ✅ | ✅ |
 | Context cancellation / AbortSignal | ✅ | ✅ |
+| `Closed` state for unexpected disconnects | ✅ | ✅ |
 | Async file transcription | ✅ | ❌ |
 | Files API (upload, list, delete) | ✅ | ❌ |
 | Models API | ✅ | ❌ |
@@ -54,6 +62,12 @@ import (
 func main() {
     client := soniox.NewClient(soniox.ClientOptions{
         APIKey: os.Getenv("SONIOX_API_KEY"),
+    })
+    defer client.Close()
+
+    err := client.Start(context.Background(), soniox.SessionOptions{
+        Model:                   "stt-rt-v4",
+        EnableEndpointDetection: true,
         OnResult: func(response *soniox.Response) {
             for _, token := range response.Tokens {
                 if token.IsFinal {
@@ -61,15 +75,12 @@ func main() {
                 }
             }
         },
-        OnError: func(err *soniox.Error) {
-            log.Printf("Error: %v", err)
+        OnEndpoint: func() {
+            fmt.Println() // newline on utterance boundary
         },
-    })
-    defer client.Close()
-
-    err := client.Start(context.Background(), soniox.SessionOptions{
-        Model:                    "stt-rt-v4",
-        EnableSpeakerDiarization: true,
+        OnError: func(err *soniox.Error) {
+            log.Printf("Error [%s]: %v", err.Status, err)
+        },
     })
     if err != nil {
         log.Fatal(err)
@@ -112,6 +123,7 @@ func main() {
 | `EnableSpeakerDiarization` | `bool` | `false` | Enable speaker identification |
 | `EnableLanguageIdentification` | `bool` | `false` | Enable language detection |
 | `EnableEndpointDetection` | `bool` | `false` | Enable endpoint detection for faster finalization |
+| `MaxEndpointDelayMs` | `int` | `2000` | Max endpoint delay in ms (500–3000, requires endpoint detection) |
 | `ClientReferenceID` | `string` | – | Client-defined identifier for tracking |
 | `Translation` | `*TranslationConfig` | – | Translation configuration (see [Translation](#translation)) |
 
@@ -123,9 +135,15 @@ Both `ClientOptions` and `SessionOptions` support these callbacks. Session-level
 |----------|-----------|-------------|
 | `OnStateChange` | `func(oldState, newState State)` | Called on state transitions |
 | `OnStarted` | `func()` | Called when the session starts streaming |
-| `OnResult` | `func(response *Response)` | Called for each transcription result |
+| `OnResult` | `func(response *Response)` | Called for each transcription result (special tokens filtered) |
+| `OnToken` | `func(token Token)` | Called for each individual non-special token |
+| `OnEndpoint` | `func()` | Called when an endpoint is detected (`<end>` token). Critical for voice-agent workflows. |
+| `OnFinalized` | `func()` | Called when manual finalization completes (`<fin>` token). Critical for push-to-talk workflows. |
 | `OnFinished` | `func()` | Called when the session completes |
+| `OnDisconnected` | `func(reason string)` | Called when the WebSocket connection closes unexpectedly |
 | `OnError` | `func(err *Error)` | Called when an error occurs |
+
+> **How special tokens work:** The Soniox API sends `<end>` tokens when it detects an utterance boundary and `<fin>` tokens when a manual `Finalize()` completes. These tokens are detected *before* filtering, then removed from `OnResult`/`OnToken` so users never see them. Instead, `OnEndpoint` and `OnFinalized` callbacks fire. This matches the Node.js SDK `endpoint` and `finalized` events exactly.
 
 ## Client API
 
@@ -137,7 +155,7 @@ Both `ClientOptions` and `SessionOptions` support these callbacks. Session-level
 | `Start(ctx, sessionOpts)` | Begin a transcription session |
 | `SendAudio(data)` | Send raw audio bytes |
 | `SendStream(reader, opts?)` | Stream audio from an `io.Reader` |
-| `Finalize()` | Trigger manual finalization of non-final tokens |
+| `Finalize(opts?)` | Trigger manual finalization of non-final tokens |
 | `Stop()` | Gracefully stop, waiting for final results |
 | `Cancel()` | Immediately terminate the session |
 | `Close()` | Close the client and release all resources |
@@ -157,6 +175,32 @@ Pause audio transmission while keeping the connection alive. Useful for push-to-
 client.Pause()   // User releases button — stop sending audio
 // ... silence ...
 client.Resume()  // User presses button — start sending audio again
+```
+
+### Endpoint Detection & Finalize
+
+For voice-agent and push-to-talk workflows, use endpoint detection and finalization:
+
+```go
+err := client.Start(ctx, soniox.SessionOptions{
+    Model:                   "stt-rt-v4",
+    EnableEndpointDetection: true,
+    MaxEndpointDelayMs:      1000, // faster endpoint detection (default: 2000)
+    OnEndpoint: func() {
+        // Speaker finished an utterance — process it
+        fmt.Println("[endpoint detected]")
+    },
+    OnFinalized: func() {
+        // Manual finalization confirmed by server
+        fmt.Println("[finalization complete]")
+    },
+})
+
+// Later: manually finalize non-final tokens
+client.Finalize()
+
+// Or with trailing silence
+client.Finalize(soniox.FinalizeOptions{TrailingSilenceMs: 500})
 ```
 
 ### SendStream
@@ -322,12 +366,13 @@ The client tracks its lifecycle through these states:
 | `Finished` | Session completed successfully |
 | `Error` | An error occurred |
 | `Canceled` | Session was canceled via `Cancel()` or context cancellation |
+| `Closed` | WebSocket connection closed unexpectedly (server dropped connection) |
 
 ```go
 // State helpers
 client.State().IsActive()    // true for Connecting, Running, Finishing
-client.State().IsInactive()  // true for Init, Finished, Error, Canceled
-client.State().IsTerminal()  // true for Finished, Error, Canceled
+client.State().IsInactive()  // true for Init, Finished, Error, Canceled, Closed
+client.State().IsTerminal()  // true for Finished, Error, Canceled, Closed
 
 // Listen for state changes
 client := soniox.NewClient(soniox.ClientOptions{
@@ -353,7 +398,7 @@ client.Start(ctx, sessionOpts)
 
 ## Error Handling
 
-All errors implement the standard `error` interface and can be type-asserted to `*soniox.Error`:
+All errors implement the standard `error` interface and can be type-asserted to `*soniox.Error`. API errors are automatically mapped to typed statuses matching the Node.js SDK:
 
 ```go
 err := client.Start(ctx, sessionOpts)
@@ -361,27 +406,35 @@ if err != nil {
     var sonioxErr *soniox.Error
     if errors.As(err, &sonioxErr) {
         switch sonioxErr.Status {
-        case soniox.ErrorStatusAPIError:
-            log.Printf("API error (code %d): %s", *sonioxErr.Code, sonioxErr.Message)
+        case soniox.ErrorStatusAuthError:
+            log.Printf("Authentication failed (code %d): %s", *sonioxErr.Code, sonioxErr.Message)
+        case soniox.ErrorStatusBadRequest:
+            log.Printf("Bad request (code %d): %s", *sonioxErr.Code, sonioxErr.Message)
+        case soniox.ErrorStatusQuotaExceeded:
+            log.Printf("Quota/rate limit exceeded: %s", sonioxErr.Message)
+        case soniox.ErrorStatusNetworkError:
+            log.Printf("Server error: %s", sonioxErr.Message)
         case soniox.ErrorStatusWebSocketError:
             log.Printf("WebSocket error: %s", sonioxErr.Message)
-        case soniox.ErrorStatusAPIKeyFetchFailed:
-            log.Printf("API key error: %s", sonioxErr.Message)
         default:
-            log.Printf("Error: %s", sonioxErr.Message)
+            log.Printf("Error [%s]: %s", sonioxErr.Status, sonioxErr.Message)
         }
     }
 }
 ```
 
-| Error Status | Description |
-|-------------|-------------|
-| `api_error` | Error returned by the Soniox API |
-| `websocket_error` | WebSocket communication error |
-| `connection_closed` | Connection unexpectedly closed |
-| `api_key_fetch_failed` | `APIKeyFunc` returned an error |
-| `queue_limit_exceeded` | Buffer or write queue is full |
-| `invalid_state` | Operation attempted in wrong state |
+| Error Status | HTTP Code(s) | Description |
+|-------------|:------------:|-------------|
+| `auth_error` | 401 | Authentication failed (invalid API key) |
+| `bad_request` | 400 | Bad request (invalid parameters) |
+| `quota_exceeded` | 402, 429 | Quota or rate limit exceeded |
+| `network_error` | 408, 500, 503 | Server-side network error |
+| `api_error` | other | Generic API error |
+| `websocket_error` | – | WebSocket communication error |
+| `connection_closed` | – | Connection unexpectedly closed |
+| `api_key_fetch_failed` | – | `APIKeyFunc` returned an error |
+| `queue_limit_exceeded` | – | Buffer or write queue is full |
+| `invalid_state` | – | Operation attempted in wrong state |
 
 ## Stop vs Cancel
 
@@ -390,6 +443,18 @@ if err != nil {
 
 Use `Stop()` for user-initiated stops (e.g., "Stop Recording" button).
 Use `Cancel()` when you need to immediately discard resources (e.g., page navigation, timeout).
+
+## Performance
+
+The Go SDK includes several optimizations not present in the Node.js SDK:
+
+- **TCP_NODELAY** — Disables Nagle's algorithm so each audio chunk hits the wire immediately instead of being buffered up to 40ms.
+- **TLS Session Cache** — Reused across sessions on the same `Client` instance for faster reconnection via TLS session tickets.
+- **Zero-hop Direct Writes** — `SendAudio` writes directly to the kernel socket buffer via a mutex. No channel, no goroutine hop. The path is: caller → mutex → syscall.
+- **No Write Goroutine** — Only 2 background goroutines (readLoop + keepAliveLoop) instead of the typical 3. Fewer goroutines = less scheduling overhead.
+- **RWMutex** — State checks use `RLock` for concurrent readers. Only mutations take the full lock.
+- **In-place Token Filtering** — `filterSpecialTokens` reslices in-place with zero allocation.
+- **Pre-allocated Message Queue** — Queue capacity is allocated once during `Start()`.
 
 ## Running Examples
 
@@ -417,6 +482,7 @@ go run main.go
 ## Documentation
 
 - [Soniox Documentation](https://soniox.com/docs)
+- [Official Node.js SDK (`@soniox/node`)](https://github.com/soniox/soniox-js) — the reference implementation this Go SDK is built against
 - [Node SDK Documentation](https://soniox.com/docs/stt/SDKs/node-SDK)
 - [WebSocket API Reference](https://soniox.com/docs/stt/api-reference/websocket-api)
 - [Go Package Documentation](https://pkg.go.dev/github.com/moxierobots/soniox-stt-go)
