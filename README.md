@@ -1,4 +1,4 @@
-# Soniox Speech-to-Text Go SDK
+# Soniox Go SDK
 
 **Unofficial** Go SDK for the [Soniox Speech-to-Text](https://soniox.com) real-time WebSocket API. Enable real-time speech-to-text transcription and translation in your Go applications.
 
