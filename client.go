@@ -19,18 +19,18 @@ type Client struct {
 	sessionOptions *SessionOptions
 
 	mu           sync.RWMutex
-	writeMu      sync.Mutex // serializes all WebSocket writes — replaces channel for zero-hop direct writes
+	writeMu      sync.Mutex
 	state        State
 	paused       bool
 	conn         *websocket.Conn
-	messageQueue [][]byte   // queued binary (audio) messages during Connecting
-	controlQueue [][]byte   // queued text (control) messages during Connecting
+	messageQueue [][]byte
+	controlQueue [][]byte
 	done         chan struct{}
 	closeOnce    sync.Once
-	tlsCache     tls.ClientSessionCache // reused across sessions for faster TLS resumption
+	tlsCache     tls.ClientSessionCache
 }
 
-// NewClient creates a new Soniox client with the given options.
+// NewClient creates a new client.
 func NewClient(options ClientOptions) *Client {
 	options.applyDefaults()
 	return &Client{
@@ -40,23 +40,18 @@ func NewClient(options ClientOptions) *Client {
 	}
 }
 
-// State returns the current state of the client.
 func (c *Client) State() State {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.state
 }
 
-// Paused returns whether the client is currently paused.
 func (c *Client) Paused() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.paused
 }
 
-// setState updates the client state and triggers the callback.
-// Transitions from terminal states (Finished, Error, Canceled) are silently ignored
-// to prevent race conditions between concurrent goroutines.
 func (c *Client) setState(newState State) {
 	c.mu.Lock()
 	oldState := c.state
@@ -67,7 +62,6 @@ func (c *Client) setState(newState State) {
 	c.state = newState
 	c.mu.Unlock()
 
-	// Call session-level callback first, then client-level
 	if c.sessionOptions != nil && c.sessionOptions.OnStateChange != nil {
 		c.sessionOptions.OnStateChange(oldState, newState)
 	} else if c.options.OnStateChange != nil {
@@ -75,7 +69,6 @@ func (c *Client) setState(newState State) {
 	}
 }
 
-// getCallback returns the appropriate callback (session-level takes precedence).
 func (c *Client) getOnStarted() func() {
 	if c.sessionOptions != nil && c.sessionOptions.OnStarted != nil {
 		return c.sessionOptions.OnStarted
@@ -132,9 +125,7 @@ func (c *Client) getOnDisconnected() func(string) {
 	return c.options.OnDisconnected
 }
 
-// Start begins a transcription session with the given options.
-// The provided context controls the session lifetime: cancelling it will
-// close the WebSocket connection and set the state to Canceled.
+// Start begins a transcription session.
 func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 	c.mu.Lock()
 	if c.state.IsActive() {
@@ -152,18 +143,15 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 
 	c.setState(StateConnecting)
 
-	// Get API key
 	apiKey, err := c.getAPIKey()
 	if err != nil {
 		c.handleError(NewErrorWithCause(ErrorStatusAPIKeyFetchFailed, "failed to get API key", err))
 		return err
 	}
 
-	// Create connection context with timeout
 	connCtx, cancel := context.WithTimeout(ctx, c.options.ConnectTimeout)
 	defer cancel()
 
-	// Connect to WebSocket with TCP_NODELAY and TLS session cache
 	dialer := websocket.Dialer{
 		HandshakeTimeout: c.options.ConnectTimeout,
 		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -172,8 +160,6 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 			if err != nil {
 				return nil, err
 			}
-			// TCP_NODELAY disables Nagle's algorithm — each write goes to the
-			// wire immediately instead of being buffered up to 40ms.
 			if tc, ok := conn.(*net.TCPConn); ok {
 				tc.SetNoDelay(true)
 			}
@@ -194,7 +180,6 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 	c.conn = conn
 	c.mu.Unlock()
 
-	// Send initial configuration — direct write, no goroutines running yet
 	request := c.sessionOptions.toRequest(apiKey)
 	configData, err := json.Marshal(request)
 	if err != nil {
@@ -210,9 +195,7 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 		return err
 	}
 
-	// Send any queued messages — direct write, still single-threaded
 	c.mu.Lock()
-	// Flush queued audio (binary) messages
 	for _, msg := range c.messageQueue {
 		conn.SetWriteDeadline(time.Now().Add(c.options.WriteTimeout))
 		if err := conn.WriteMessage(websocket.BinaryMessage, msg); err != nil {
@@ -223,7 +206,6 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 		}
 	}
 	c.messageQueue = nil
-	// Flush queued control (text) messages (e.g., finalize queued during Connecting)
 	for _, msg := range c.controlQueue {
 		conn.SetWriteDeadline(time.Now().Add(c.options.WriteTimeout))
 		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
@@ -238,17 +220,13 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 
 	c.setState(StateRunning)
 
-	// Call onStarted callback
 	if cb := c.getOnStarted(); cb != nil {
 		cb()
 	}
 
-	// Start background goroutines — only readLoop and keepAliveLoop.
-	// No writeLoop needed: all writes go through writeMu directly.
 	go c.readLoop()
 	go c.keepAliveLoop()
 
-	// Monitor context for cancellation
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -261,7 +239,6 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 	return nil
 }
 
-// getAPIKey retrieves the API key from the configured source.
 func (c *Client) getAPIKey() (string, error) {
 	if c.options.APIKeyFunc != nil {
 		return c.options.APIKeyFunc()
@@ -270,8 +247,6 @@ func (c *Client) getAPIKey() (string, error) {
 }
 
 // SendAudio sends audio data to the transcription service.
-// If the client is paused, audio is silently dropped.
-// Writes go directly to the WebSocket (no channel hop) for minimum latency.
 func (c *Client) SendAudio(data []byte) error {
 	c.mu.RLock()
 	state := c.state
@@ -279,12 +254,11 @@ func (c *Client) SendAudio(data []byte) error {
 	c.mu.RUnlock()
 
 	if paused {
-		return nil // drop silently when paused
+		return nil
 	}
 
 	switch state {
 	case StateConnecting:
-		// Queue the message for sending after connection is established
 		c.mu.Lock()
 		if len(c.messageQueue) >= c.options.BufferQueueSize {
 			c.mu.Unlock()
@@ -302,9 +276,7 @@ func (c *Client) SendAudio(data []byte) error {
 	}
 }
 
-// SendStream reads audio data from r and sends it to the transcription service.
-// It blocks until r returns io.EOF, an error occurs, or the session ends.
-// If opts.Finish is true, Stop() is called after the entire stream is consumed.
+// SendStream reads from r and sends audio chunks until EOF.
 func (c *Client) SendStream(r io.Reader, opts ...SendStreamOptions) error {
 	var opt SendStreamOptions
 	if len(opts) > 0 {
@@ -318,7 +290,6 @@ func (c *Client) SendStream(r io.Reader, opts ...SendStreamOptions) error {
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			// Copy the data since buf is reused
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
 			if sendErr := c.SendAudio(chunk); sendErr != nil {
@@ -341,15 +312,14 @@ func (c *Client) SendStream(r io.Reader, opts ...SendStreamOptions) error {
 	return nil
 }
 
-// Pause pauses audio transmission. Audio sent via SendAudio will be silently dropped.
-// Keep-alive messages continue to be sent to maintain the connection.
+// Pause pauses audio transmission.
 func (c *Client) Pause() {
 	c.mu.Lock()
 	c.paused = true
 	c.mu.Unlock()
 }
 
-// Resume resumes audio transmission after a Pause.
+// Resume resumes audio transmission.
 func (c *Client) Resume() {
 	c.mu.Lock()
 	c.paused = false
@@ -357,9 +327,6 @@ func (c *Client) Resume() {
 }
 
 // Finalize triggers manual finalization of non-final tokens.
-// Optionally pass FinalizeOptions to specify trailing silence milliseconds.
-// During Connecting state, the finalize message is queued and sent after connection.
-// In other inactive states, the call is silently ignored.
 func (c *Client) Finalize(opts ...FinalizeOptions) error {
 	c.mu.RLock()
 	state := c.state
@@ -367,7 +334,6 @@ func (c *Client) Finalize(opts ...FinalizeOptions) error {
 
 	switch state {
 	case StateConnecting:
-		// Queue the finalize message for sending after connection is established
 		data, err := json.Marshal(NewFinalizeMessage(opts...))
 		if err != nil {
 			return err
@@ -377,8 +343,6 @@ func (c *Client) Finalize(opts ...FinalizeOptions) error {
 			c.mu.Unlock()
 			return NewError(ErrorStatusQueueLimitExceeded, "message queue limit exceeded")
 		}
-		// Use nil as a sentinel: controlMessages are text, audio is binary.
-		// We store the JSON bytes and send them as text in Start().
 		c.controlQueue = append(c.controlQueue, data)
 		c.mu.Unlock()
 		return nil
@@ -391,7 +355,7 @@ func (c *Client) Finalize(opts ...FinalizeOptions) error {
 	}
 }
 
-// Stop gracefully stops the transcription session, waiting for final results.
+// Stop gracefully stops the transcription session.
 func (c *Client) Stop() error {
 	c.mu.RLock()
 	state := c.state
@@ -404,21 +368,19 @@ func (c *Client) Stop() error {
 	}
 
 	if state == StateRunning {
-		// Unpause if paused
 		c.mu.Lock()
 		c.paused = false
 		c.mu.Unlock()
 
 		c.setState(StateFinishing)
 
-		// Send empty text message directly to signal end of audio stream
 		return c.writeRaw(websocket.TextMessage, []byte{})
 	}
 
 	return nil
 }
 
-// Cancel immediately terminates the transcription session without waiting for results.
+// Cancel immediately terminates the transcription session.
 func (c *Client) Cancel() {
 	c.mu.RLock()
 	state := c.state
@@ -430,8 +392,7 @@ func (c *Client) Cancel() {
 	}
 }
 
-// writeRaw writes a message directly to the WebSocket, serialized by writeMu.
-// This is the hot path — no channels, no goroutine hops, just mutex + syscall.
+// writeRaw writes a message directly to the WebSocket.
 func (c *Client) writeRaw(msgType int, data []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -451,7 +412,7 @@ func (c *Client) writeRaw(msgType int, data []byte) error {
 	return nil
 }
 
-// sendControl sends a JSON control message directly to the WebSocket.
+// sendControl sends a JSON control message.
 func (c *Client) sendControl(v interface{}) error {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -461,14 +422,6 @@ func (c *Client) sendControl(v interface{}) error {
 }
 
 // readLoop reads messages from the WebSocket.
-// Matches the Node.js SDK handleMessage behavior:
-// 1. Parse response, check for API errors (with typed error mapping)
-// 2. Detect <end> and <fin> special tokens BEFORE filtering
-// 3. Filter special tokens from user-facing result
-// 4. Emit individual token callbacks
-// 5. Emit result callback with filtered tokens
-// 6. Emit endpoint/finalized callbacks
-// 7. Handle finished response
 func (c *Client) readLoop() {
 	for {
 		c.mu.RLock()
@@ -476,7 +429,6 @@ func (c *Client) readLoop() {
 		c.mu.RUnlock()
 
 		if conn == nil {
-			// Connection already closed (e.g., by closeResources)
 			return
 		}
 
@@ -486,13 +438,10 @@ func (c *Client) readLoop() {
 			state := c.state
 			c.mu.RUnlock()
 
-			// If already in a terminal state, just exit silently
 			if state.IsTerminal() {
 				return
 			}
 
-			// Match Node.js handleClose: if finishing, it's an error (closed before finished).
-			// Otherwise, transition to Closed state.
 			if state == StateFinishing {
 				connErr := NewErrorWithCause(ErrorStatusConnectionClosed, "WebSocket closed before finished response", err)
 				c.handleError(connErr)
@@ -500,7 +449,6 @@ func (c *Client) readLoop() {
 			}
 
 			if state == StateRunning || state == StateConnecting {
-				// Emit disconnected callback, then transition to Closed
 				if cb := c.getOnDisconnected(); cb != nil {
 					cb("")
 				}
@@ -509,7 +457,6 @@ func (c *Client) readLoop() {
 				return
 			}
 
-			// Any other state — just exit
 			return
 		}
 
@@ -519,7 +466,6 @@ func (c *Client) readLoop() {
 			return
 		}
 
-		// Check for API error — use typed error mapping matching Node.js mapErrorResponse
 		if response.ErrorCode != nil || response.ErrorMessage != "" {
 			code := 0
 			if response.ErrorCode != nil {
@@ -529,40 +475,32 @@ func (c *Client) readLoop() {
 			return
 		}
 
-		// Detect special control tokens BEFORE filtering (matching Node.js handleMessage)
 		hasEndpoint := hasSpecialToken(response.Tokens, "<end>")
 		hasFinalized := hasSpecialToken(response.Tokens, "<fin>")
-
-		// Filter special tokens for user-facing events
 		response.Tokens = filterSpecialTokens(response.Tokens)
 
-		// Emit individual token callbacks
 		if cb := c.getOnToken(); cb != nil {
 			for _, tok := range response.Tokens {
 				cb(tok)
 			}
 		}
 
-		// Call result callback with filtered tokens
 		if cb := c.getOnResult(); cb != nil {
 			cb(&response)
 		}
 
-		// Emit endpoint event (speaker finished an utterance)
 		if hasEndpoint {
 			if cb := c.getOnEndpoint(); cb != nil {
 				cb()
 			}
 		}
 
-		// Emit finalized event (manual finalization confirmed by server)
 		if hasFinalized {
 			if cb := c.getOnFinalized(); cb != nil {
 				cb()
 			}
 		}
 
-		// Check if finished
 		if response.Finished {
 			c.handleFinished()
 			return
@@ -571,7 +509,6 @@ func (c *Client) readLoop() {
 }
 
 // keepAliveLoop sends keep-alive messages at regular intervals.
-// Messages are sent when KeepAlive is enabled or when the client is paused.
 func (c *Client) keepAliveLoop() {
 	ticker := time.NewTicker(c.options.KeepAliveInterval)
 	defer ticker.Stop()
@@ -598,7 +535,6 @@ func (c *Client) keepAliveLoop() {
 	}
 }
 
-// handleError handles an error by closing resources, setting state, and calling the callback.
 func (c *Client) handleError(err *Error) {
 	c.closeResources()
 	c.setState(StateError)
@@ -608,7 +544,6 @@ func (c *Client) handleError(err *Error) {
 	}
 }
 
-// handleFinished handles session completion.
 func (c *Client) handleFinished() {
 	c.closeResources()
 	c.setState(StateFinished)
@@ -618,7 +553,6 @@ func (c *Client) handleFinished() {
 	}
 }
 
-// closeConnection closes the WebSocket connection.
 func (c *Client) closeConnection() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -629,19 +563,12 @@ func (c *Client) closeConnection() {
 	}
 }
 
-// closeResources closes all resources associated with the session.
-// It is safe to call from multiple goroutines; only the first call takes effect.
 func (c *Client) closeResources() {
 	c.closeOnce.Do(func() {
-		// Signal all goroutines (keepAliveLoop, context monitor) to stop
 		if c.done != nil {
 			close(c.done)
 		}
-
-		// Close the WebSocket connection (causes readLoop to get an error and return)
 		c.closeConnection()
-
-		// Clear message queues
 		c.mu.Lock()
 		c.messageQueue = nil
 		c.controlQueue = nil
@@ -649,14 +576,12 @@ func (c *Client) closeResources() {
 	})
 }
 
-// Close closes the client and releases all resources.
+// Close releases all resources.
 func (c *Client) Close() error {
 	c.Cancel()
 	return nil
 }
 
-// hasSpecialToken checks if any token in the list has the given text.
-// Used to detect <end> and <fin> control tokens before filtering.
 func hasSpecialToken(tokens []Token, text string) bool {
 	for i := range tokens {
 		if tokens[i].Text == text {
@@ -666,8 +591,7 @@ func hasSpecialToken(tokens []Token, text string) bool {
 	return false
 }
 
-// filterSpecialTokens removes control tokens (<end>, <fin>) from the token list.
-// These tokens are internal markers from the API and should not be exposed to users.
+// filterSpecialTokens removes <end> and <fin> control tokens in-place.
 func filterSpecialTokens(tokens []Token) []Token {
 	n := 0
 	for _, t := range tokens {

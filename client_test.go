@@ -14,8 +14,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// --- Unit tests for filterSpecialTokens ---
-
 func TestFilterSpecialTokens(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -72,8 +70,6 @@ func TestFilterSpecialTokens(t *testing.T) {
 	}
 }
 
-// --- Unit tests for State helpers ---
-
 func TestStateIsActive(t *testing.T) {
 	active := []State{StateConnecting, StateRunning, StateFinishing}
 	inactive := []State{StateInit, StateFinished, StateError, StateCanceled, StateClosed}
@@ -105,8 +101,6 @@ func TestStateIsTerminal(t *testing.T) {
 		}
 	}
 }
-
-// --- Unit tests for Error types ---
 
 func TestNewError(t *testing.T) {
 	err := NewError(ErrorStatusAPIError, "test error")
@@ -154,8 +148,6 @@ func TestIsErrorStatus(t *testing.T) {
 		t.Error("expected IsErrorStatus to return false for different status")
 	}
 }
-
-// --- Unit tests for Options ---
 
 func TestClientOptionsDefaults(t *testing.T) {
 	opts := ClientOptions{}
@@ -212,14 +204,11 @@ func TestSessionOptionsToRequest(t *testing.T) {
 		t.Errorf("expected sample rate 16000, got %d", req.SampleRate)
 	}
 
-	// Verify JSON serialization includes language_hints_strict
 	data, _ := json.Marshal(req)
 	if !strings.Contains(string(data), `"language_hints_strict":true`) {
 		t.Errorf("JSON should contain language_hints_strict: %s", string(data))
 	}
 }
-
-// --- Unit tests for Client ---
 
 func TestNewClient(t *testing.T) {
 	client := NewClient(ClientOptions{APIKey: "test"})
@@ -234,12 +223,10 @@ func TestNewClient(t *testing.T) {
 func TestSetStateIgnoresTerminal(t *testing.T) {
 	client := NewClient(ClientOptions{})
 
-	// Manually set to a terminal state
 	client.mu.Lock()
 	client.state = StateError
 	client.mu.Unlock()
 
-	// Try to transition from terminal - should be ignored
 	client.setState(StateRunning)
 	if client.State() != StateError {
 		t.Errorf("expected state to remain Error, got %s", client.State())
@@ -259,7 +246,6 @@ func TestSetStateIgnoresSameState(t *testing.T) {
 		t.Errorf("expected 1 callback, got %d", callCount)
 	}
 
-	// Same state transition - should be ignored
 	client.setState(StateConnecting)
 	if callCount != 1 {
 		t.Errorf("expected still 1 callback, got %d", callCount)
@@ -292,12 +278,6 @@ func TestPauseResume(t *testing.T) {
 	}
 }
 
-// --- Mock WebSocket server for integration tests ---
-
-// mockWSHandler creates a basic mock WebSocket server that:
-// 1. Reads the config message
-// 2. For each binary message, sends a result with a token
-// 3. When it receives an empty text message, sends a finished response
 func mockWSHandler(t *testing.T) http.HandlerFunc {
 	t.Helper()
 	upgrader := websocket.Upgrader{
@@ -312,7 +292,6 @@ func mockWSHandler(t *testing.T) http.HandlerFunc {
 		}
 		defer conn.Close()
 
-		// Read config message
 		_, _, err = conn.ReadMessage()
 		if err != nil {
 			t.Logf("read config error: %v", err)
@@ -325,7 +304,6 @@ func mockWSHandler(t *testing.T) http.HandlerFunc {
 				return
 			}
 
-			// Empty text message = stop signal
 			if msgType == websocket.TextMessage && len(msg) == 0 {
 				resp := Response{
 					Finished: true,
@@ -336,12 +314,10 @@ func mockWSHandler(t *testing.T) http.HandlerFunc {
 				return
 			}
 
-			// Text message = control (finalize, keepalive)
 			if msgType == websocket.TextMessage {
 				continue
 			}
 
-			// Binary message = audio, send back a result
 			resp := Response{
 				Tokens: []Token{
 					{Text: "hello ", IsFinal: true},
@@ -363,8 +339,6 @@ func startMockServer(t *testing.T) string {
 	t.Cleanup(server.Close)
 	return wsURL
 }
-
-// --- Integration tests with mock server ---
 
 func TestConnectAndStop(t *testing.T) {
 	wsURL := startMockServer(t)
@@ -398,7 +372,6 @@ func TestConnectAndStop(t *testing.T) {
 		t.Fatalf("Stop failed: %v", err)
 	}
 
-	// Wait for finished
 	deadline := time.After(5 * time.Second)
 	for {
 		if client.State() == StateFinished {
@@ -414,7 +387,6 @@ func TestConnectAndStop(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// States should be: Connecting, Running, Finishing, Finished
 	expected := []State{StateConnecting, StateRunning, StateFinishing, StateFinished}
 	if len(states) != len(expected) {
 		t.Errorf("expected %d state transitions, got %d: %v", len(expected), len(states), states)
@@ -455,13 +427,11 @@ func TestSendAudioAndReceive(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Send some audio
 	err = client.SendAudio([]byte("fake audio data"))
 	if err != nil {
 		t.Fatalf("SendAudio failed: %v", err)
 	}
 
-	// Give the server a moment to respond
 	time.Sleep(100 * time.Millisecond)
 
 	err = client.Stop()
@@ -478,7 +448,6 @@ func TestSendAudioAndReceive(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Should have received "hello " but NOT "<end>" (filtered)
 	foundHello := false
 	for _, tok := range receivedTokens {
 		if tok.Text == "<end>" {
@@ -513,7 +482,6 @@ func TestSendStream(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Send via SendStream with Finish=true
 	audioData := bytes.NewReader([]byte("fake audio data that is long enough"))
 	err = client.SendStream(audioData, SendStreamOptions{
 		ChunkSize: 8,
@@ -549,10 +517,8 @@ func TestContextCancellation(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Cancel the context
 	cancel()
 
-	// Wait for state to become Canceled
 	deadline := time.After(5 * time.Second)
 	for {
 		state := client.State()
@@ -596,14 +562,12 @@ func TestPausedAudioDropped(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Pause and send audio - should be dropped
 	client.Pause()
 	err = client.SendAudio([]byte("should be dropped"))
 	if err != nil {
 		t.Fatalf("SendAudio while paused should not error: %v", err)
 	}
 
-	// Wait a bit to ensure nothing comes back
 	time.Sleep(100 * time.Millisecond)
 
 	mu.Lock()
@@ -613,7 +577,6 @@ func TestPausedAudioDropped(t *testing.T) {
 		t.Errorf("expected 0 results while paused, got %d", count)
 	}
 
-	// Resume and stop
 	client.Resume()
 	client.Stop()
 
@@ -644,13 +607,11 @@ func TestFinalizeMessage(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Finalize should not error
 	err = client.Finalize()
 	if err != nil {
 		t.Fatalf("Finalize failed: %v", err)
 	}
 
-	// Stop
 	err = client.Stop()
 	if err != nil {
 		t.Fatalf("Stop failed: %v", err)
@@ -664,7 +625,6 @@ func TestFinalizeMessage(t *testing.T) {
 }
 
 func TestFinalizeWithTrailingSilence(t *testing.T) {
-	// Verify JSON serialization includes trailing_silence_ms
 	msg := NewFinalizeMessage(FinalizeOptions{TrailingSilenceMs: 500})
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -675,7 +635,6 @@ func TestFinalizeWithTrailingSilence(t *testing.T) {
 		t.Errorf("expected trailing_silence_ms in JSON, got: %s", s)
 	}
 
-	// Without options, trailing_silence_ms should be omitted
 	msg2 := NewFinalizeMessage()
 	data2, _ := json.Marshal(msg2)
 	if strings.Contains(string(data2), "trailing_silence_ms") {
@@ -686,7 +645,6 @@ func TestFinalizeWithTrailingSilence(t *testing.T) {
 func TestFinalizeIgnoredWhenNotActive(t *testing.T) {
 	client := NewClient(ClientOptions{})
 
-	// Client is in Init state — Finalize should be silently ignored
 	err := client.Finalize()
 	if err != nil {
 		t.Fatalf("Finalize in Init state should not error, got: %v", err)
@@ -718,7 +676,6 @@ func TestFinalizeWithTrailingSilenceIntegration(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Finalize with trailing silence option
 	err = client.Finalize(FinalizeOptions{TrailingSilenceMs: 200})
 	if err != nil {
 		t.Fatalf("Finalize with trailing silence failed: %v", err)
@@ -748,10 +705,7 @@ func TestErrorCallback(t *testing.T) {
 		}
 		defer conn.Close()
 
-		// Read config
 		conn.ReadMessage()
-
-		// Send error response
 		code := 401
 		resp := Response{
 			ErrorCode:    &code,
@@ -802,8 +756,6 @@ func TestErrorCallback(t *testing.T) {
 	}
 }
 
-// --- Tests for MapAPIError typed error mapping ---
-
 func TestMapAPIError(t *testing.T) {
 	tests := []struct {
 		code     int
@@ -832,8 +784,6 @@ func TestMapAPIError(t *testing.T) {
 	}
 }
 
-// --- Tests for hasSpecialToken ---
-
 func TestHasSpecialToken(t *testing.T) {
 	tokens := []Token{
 		{Text: "hello "},
@@ -851,9 +801,6 @@ func TestHasSpecialToken(t *testing.T) {
 	}
 }
 
-// --- Tests for OnEndpoint and OnFinalized callbacks ---
-
-// mockWSHandlerWithSpecialTokens creates a server that sends <end> and <fin> tokens
 func mockWSHandlerWithSpecialTokens(t *testing.T) http.HandlerFunc {
 	t.Helper()
 	upgrader := websocket.Upgrader{
@@ -867,7 +814,6 @@ func mockWSHandlerWithSpecialTokens(t *testing.T) http.HandlerFunc {
 		}
 		defer conn.Close()
 
-		// Read config
 		conn.ReadMessage()
 
 		for {
@@ -876,7 +822,6 @@ func mockWSHandlerWithSpecialTokens(t *testing.T) http.HandlerFunc {
 				return
 			}
 
-			// Empty text = stop
 			if msgType == websocket.TextMessage && len(msg) == 0 {
 				resp := Response{Finished: true, Tokens: []Token{}}
 				data, _ := json.Marshal(resp)
@@ -884,13 +829,10 @@ func mockWSHandlerWithSpecialTokens(t *testing.T) http.HandlerFunc {
 				return
 			}
 
-			// Control messages
 			if msgType == websocket.TextMessage {
-				// Check if finalize
 				var ctrl map[string]interface{}
 				if json.Unmarshal(msg, &ctrl) == nil {
 					if ctrl["type"] == "finalize" {
-						// Send response with <fin> token
 						resp := Response{
 							Tokens: []Token{
 								{Text: "finalized ", IsFinal: true},
@@ -904,7 +846,6 @@ func mockWSHandlerWithSpecialTokens(t *testing.T) http.HandlerFunc {
 				continue
 			}
 
-			// Binary = audio, send result with <end> token
 			resp := Response{
 				Tokens: []Token{
 					{Text: "hello ", IsFinal: true},
@@ -924,7 +865,7 @@ func TestOnEndpointCallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _ := upgrader.Upgrade(w, r, nil)
 		defer conn.Close()
-		conn.ReadMessage() // config
+		conn.ReadMessage()
 
 		for {
 			msgType, msg, err := conn.ReadMessage()
@@ -939,7 +880,6 @@ func TestOnEndpointCallback(t *testing.T) {
 			if msgType == websocket.TextMessage {
 				continue
 			}
-			// Audio → respond with <end>
 			data, _ := json.Marshal(Response{
 				Tokens: []Token{{Text: "hello ", IsFinal: true}, {Text: "<end>"}},
 			})
@@ -1019,7 +959,6 @@ func TestOnFinalizedCallback(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Finalize should trigger <fin> from server
 	client.Finalize()
 	time.Sleep(100 * time.Millisecond)
 	client.Stop()
@@ -1036,8 +975,6 @@ func TestOnFinalizedCallback(t *testing.T) {
 		t.Error("expected OnFinalized to be called at least once")
 	}
 }
-
-// --- Test for OnToken callback ---
 
 func TestOnTokenCallback(t *testing.T) {
 	wsURL := startMockServer(t)
@@ -1089,15 +1026,12 @@ func TestOnTokenCallback(t *testing.T) {
 	}
 }
 
-// --- Test for OnDisconnected callback ---
-
 func TestOnDisconnectedCallback(t *testing.T) {
-	// Server that closes immediately after config
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _ := upgrader.Upgrade(w, r, nil)
-		conn.ReadMessage() // config
-		conn.Close()       // close immediately
+		conn.ReadMessage()
+		conn.Close()
 	}))
 	defer server.Close()
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
@@ -1120,12 +1054,10 @@ func TestOnDisconnectedCallback(t *testing.T) {
 
 	select {
 	case <-disconnected:
-		// Good — disconnected callback was called
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for OnDisconnected")
 	}
 
-	// State should be Closed
 	deadline := time.After(5 * time.Second)
 	for {
 		if client.State() == StateClosed {
@@ -1139,8 +1071,6 @@ func TestOnDisconnectedCallback(t *testing.T) {
 		}
 	}
 }
-
-// --- Test for StateClosed ---
 
 func TestStateClosedIsTerminalAndInactive(t *testing.T) {
 	if !StateClosed.IsTerminal() {
@@ -1156,8 +1086,6 @@ func TestStateClosedIsTerminalAndInactive(t *testing.T) {
 		t.Error("StateClosed should not be WebSocket active")
 	}
 }
-
-// --- Test for typed API error responses ---
 
 func TestTypedAPIErrorBadRequest(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -1237,8 +1165,6 @@ func TestTypedAPIErrorQuota(t *testing.T) {
 	}
 }
 
-// --- Test for MaxEndpointDelayMs in request ---
-
 func TestMaxEndpointDelayMsInRequest(t *testing.T) {
 	opts := SessionOptions{
 		EnableEndpointDetection: true,
@@ -1256,7 +1182,6 @@ func TestMaxEndpointDelayMsInRequest(t *testing.T) {
 		t.Errorf("JSON should contain max_endpoint_delay_ms: %s", string(data))
 	}
 
-	// Zero value should be omitted
 	opts2 := SessionOptions{}
 	opts2.applyDefaults()
 	req2 := opts2.toRequest("test-key")
@@ -1265,8 +1190,6 @@ func TestMaxEndpointDelayMsInRequest(t *testing.T) {
 		t.Errorf("max_endpoint_delay_ms should be omitted when zero: %s", string(data2))
 	}
 }
-
-// --- Test that special tokens are filtered but events still fire ---
 
 func TestSpecialTokensFilteredButEventsEmitted(t *testing.T) {
 	server := httptest.NewServer(mockWSHandlerWithSpecialTokens(t))
@@ -1318,20 +1241,16 @@ func TestSpecialTokensFilteredButEventsEmitted(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Tokens should NOT contain <end>
 	for _, text := range resultTokenTexts {
 		if text == "<end>" || text == "<fin>" {
 			t.Errorf("special token %q should have been filtered from OnResult", text)
 		}
 	}
 
-	// But endpoint event should have fired
 	if !endpointCalled {
 		t.Error("OnEndpoint should have been called even though <end> was filtered from tokens")
 	}
 }
-
-// --- Test session-level callback override for new callbacks ---
 
 func TestSessionCallbackOverridesClient(t *testing.T) {
 	wsURL := startMockServer(t)

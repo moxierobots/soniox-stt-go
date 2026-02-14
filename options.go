@@ -3,177 +3,67 @@ package soniox
 import "time"
 
 const (
-	// DefaultWebSocketURL is the default Soniox WebSocket endpoint.
-	DefaultWebSocketURL = "wss://stt-rt.soniox.com/transcribe-websocket"
-
-	// DefaultBufferQueueSize is the default maximum number of messages to buffer.
+	DefaultWebSocketURL    = "wss://stt-rt.soniox.com/transcribe-websocket"
 	DefaultBufferQueueSize = 1000
-
-	// DefaultKeepAliveInterval is the default interval for keep-alive messages.
 	DefaultKeepAliveInterval = 5 * time.Second
-
-	// DefaultConnectTimeout is the default timeout for establishing a connection.
-	DefaultConnectTimeout = 30 * time.Second
-
-	// DefaultWriteTimeout is the default timeout for writing messages.
-	DefaultWriteTimeout = 10 * time.Second
-
-	// DefaultModel is the default speech-to-text model.
-	DefaultModel = "stt-rt-v4"
-
-	// DefaultAudioFormat is the default audio format.
-	DefaultAudioFormat = "auto"
-
-	// DefaultStreamChunkSize is the default chunk size in bytes for SendStream.
-	DefaultStreamChunkSize = 4096
+	DefaultConnectTimeout    = 30 * time.Second
+	DefaultWriteTimeout      = 10 * time.Second
+	DefaultModel             = "stt-rt-v4"
+	DefaultAudioFormat       = "auto"
+	DefaultStreamChunkSize   = 4096
 )
 
-// APIKeyFunc is a function that returns an API key.
-// This is useful for fetching temporary API keys dynamically.
+// APIKeyFunc returns an API key dynamically (e.g. temporary keys).
 type APIKeyFunc func() (string, error)
 
-// ClientOptions configures the Soniox client.
 type ClientOptions struct {
-	// WebSocketURL is the WebSocket endpoint URL.
-	// Default: DefaultWebSocketURL
-	WebSocketURL string
-
-	// APIKey is the Soniox API key (string or function).
-	// If a function is provided, it will be called when the connection is established.
-	APIKey string
-
-	// APIKeyFunc is a function that returns the API key.
-	// Takes precedence over APIKey if both are set.
-	APIKeyFunc APIKeyFunc
-
-	// BufferQueueSize is the maximum number of audio chunks to buffer
-	// before the WebSocket connection is established.
-	// Default: DefaultBufferQueueSize
-	BufferQueueSize int
-
-	// KeepAlive enables sending keep-alive messages during silence.
-	// Default: false
-	KeepAlive bool
-
-	// KeepAliveInterval is the interval between keep-alive messages.
-	// Default: DefaultKeepAliveInterval
+	WebSocketURL      string
+	APIKey            string
+	APIKeyFunc        APIKeyFunc // takes precedence over APIKey
+	BufferQueueSize   int
+	KeepAlive         bool
 	KeepAliveInterval time.Duration
+	ConnectTimeout    time.Duration
+	WriteTimeout      time.Duration
 
-	// ConnectTimeout is the timeout for establishing the WebSocket connection.
-	// Default: DefaultConnectTimeout
-	ConnectTimeout time.Duration
-
-	// WriteTimeout is the timeout for writing messages to the WebSocket.
-	// Default: DefaultWriteTimeout
-	WriteTimeout time.Duration
-
-	// OnStateChange is called when the client state changes.
-	OnStateChange func(oldState, newState State)
-
-	// OnStarted is called when the transcription session starts.
-	OnStarted func()
-
-	// OnResult is called when transcription results are received.
-	// Tokens are filtered: special control tokens (<end>, <fin>) are removed.
-	OnResult func(response *Response)
-
-	// OnToken is called for each individual non-special token received.
-	OnToken func(token Token)
-
-	// OnEndpoint is called when an endpoint is detected (<end> token).
-	// This indicates the speaker has finished an utterance.
-	// Critical for voice-agent and push-to-talk workflows.
-	OnEndpoint func()
-
-	// OnFinalized is called when manual finalization completes (<fin> token).
-	// This confirms that a prior Finalize() call has been processed by the server.
-	OnFinalized func()
-
-	// OnFinished is called when the transcription session finishes.
-	OnFinished func()
-
-	// OnDisconnected is called when the WebSocket connection is closed.
-	// The reason string may be empty.
+	OnStateChange  func(oldState, newState State)
+	OnStarted      func()
+	OnResult       func(response *Response)
+	OnToken        func(token Token)
+	OnEndpoint     func()
+	OnFinalized    func()
+	OnFinished     func()
 	OnDisconnected func(reason string)
-
-	// OnError is called when an error occurs.
-	OnError func(err *Error)
+	OnError        func(err *Error)
 }
 
-// SessionOptions configures a transcription session.
 type SessionOptions struct {
-	// Model specifies the speech-to-text model to use.
-	// Default: DefaultModel
-	Model string
-
-	// AudioFormat specifies the format of the audio stream.
-	// Default: DefaultAudioFormat
-	AudioFormat string
-
-	// SampleRate is the sample rate in Hz (required for raw PCM formats).
-	SampleRate int
-
-	// NumChannels is the number of audio channels (required for raw PCM formats).
-	NumChannels int
-
-	// LanguageHints provides hints about expected languages.
-	LanguageHints []string
-
-	// LanguageHintsStrict enforces strict adherence to language hints.
-	LanguageHintsStrict bool
-
-	// Context provides domain-specific context for improved accuracy.
-	Context *Context
-
-	// EnableSpeakerDiarization enables speaker identification.
-	EnableSpeakerDiarization bool
-
-	// EnableLanguageIdentification enables language detection.
+	Model                        string
+	AudioFormat                  string
+	SampleRate                   int
+	NumChannels                  int
+	LanguageHints                []string
+	LanguageHintsStrict          bool
+	Context                      *Context
+	EnableSpeakerDiarization     bool
 	EnableLanguageIdentification bool
+	EnableEndpointDetection      bool
+	MaxEndpointDelayMs           int
+	ClientReferenceID            string
+	Translation                  *TranslationConfig
 
-	// EnableEndpointDetection enables automatic endpoint detection.
-	EnableEndpointDetection bool
-
-	// MaxEndpointDelayMs sets the maximum endpoint detection delay in milliseconds.
-	// Must be between 500 and 3000. Default is 2000.
-	// Only used when EnableEndpointDetection is true.
-	MaxEndpointDelayMs int
-
-	// ClientReferenceID is an optional client-defined identifier.
-	ClientReferenceID string
-
-	// Translation configures real-time translation.
-	Translation *TranslationConfig
-
-	// OnStateChange overrides the client's OnStateChange callback for this session.
-	OnStateChange func(oldState, newState State)
-
-	// OnStarted overrides the client's OnStarted callback for this session.
-	OnStarted func()
-
-	// OnResult overrides the client's OnResult callback for this session.
-	OnResult func(response *Response)
-
-	// OnToken overrides the client's OnToken callback for this session.
-	OnToken func(token Token)
-
-	// OnEndpoint overrides the client's OnEndpoint callback for this session.
-	OnEndpoint func()
-
-	// OnFinalized overrides the client's OnFinalized callback for this session.
-	OnFinalized func()
-
-	// OnFinished overrides the client's OnFinished callback for this session.
-	OnFinished func()
-
-	// OnDisconnected overrides the client's OnDisconnected callback for this session.
+	// Per-session callback overrides (take precedence over ClientOptions).
+	OnStateChange  func(oldState, newState State)
+	OnStarted      func()
+	OnResult       func(response *Response)
+	OnToken        func(token Token)
+	OnEndpoint     func()
+	OnFinalized    func()
+	OnFinished     func()
 	OnDisconnected func(reason string)
-
-	// OnError overrides the client's OnError callback for this session.
-	OnError func(err *Error)
+	OnError        func(err *Error)
 }
 
-// applyDefaults applies default values to ClientOptions.
 func (o *ClientOptions) applyDefaults() {
 	if o.WebSocketURL == "" {
 		o.WebSocketURL = DefaultWebSocketURL
@@ -192,7 +82,6 @@ func (o *ClientOptions) applyDefaults() {
 	}
 }
 
-// applyDefaults applies default values to SessionOptions.
 func (o *SessionOptions) applyDefaults() {
 	if o.Model == "" {
 		o.Model = DefaultModel
@@ -202,7 +91,6 @@ func (o *SessionOptions) applyDefaults() {
 	}
 }
 
-// toRequest converts SessionOptions to an API Request.
 func (o *SessionOptions) toRequest(apiKey string) *Request {
 	return &Request{
 		APIKey:                       apiKey,
@@ -222,16 +110,8 @@ func (o *SessionOptions) toRequest(apiKey string) *Request {
 	}
 }
 
-// SendStreamOptions configures the behavior of Client.SendStream.
 type SendStreamOptions struct {
-	// ChunkSize is the number of bytes to read per chunk.
-	// Default: DefaultStreamChunkSize (4096)
-	ChunkSize int
-
-	// PaceInterval is the delay between sending chunks.
-	// Zero means no pacing (send as fast as possible).
+	ChunkSize    int
 	PaceInterval time.Duration
-
-	// Finish calls Stop() after the entire stream has been sent.
-	Finish bool
+	Finish       bool // calls Stop() after the stream is fully sent
 }
