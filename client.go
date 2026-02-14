@@ -2,8 +2,10 @@ package soniox
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -11,34 +13,29 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// writeMsg is an internal message for the unified write queue.
-// All WebSocket writes (audio, control, stop signal) are routed through this type.
-type writeMsg struct {
-	data    []byte
-	msgType int
-}
-
 // Client is a Soniox Speech-to-Text WebSocket client.
 type Client struct {
 	options        ClientOptions
 	sessionOptions *SessionOptions
 
 	mu           sync.RWMutex
+	writeMu      sync.Mutex // serializes all WebSocket writes — replaces channel for zero-hop direct writes
 	state        State
 	paused       bool
 	conn         *websocket.Conn
 	messageQueue [][]byte
 	done         chan struct{}
-	writeQueue   chan writeMsg
 	closeOnce    sync.Once
+	tlsCache     tls.ClientSessionCache // reused across sessions for faster TLS resumption
 }
 
 // NewClient creates a new Soniox client with the given options.
 func NewClient(options ClientOptions) *Client {
 	options.applyDefaults()
 	return &Client{
-		options: options,
-		state:   StateInit,
+		options:  options,
+		state:    StateInit,
+		tlsCache: tls.NewLRUClientSessionCache(32),
 	}
 }
 
@@ -119,7 +116,6 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 	c.sessionOptions.applyDefaults()
 	c.messageQueue = make([][]byte, 0, c.options.BufferQueueSize)
 	c.done = make(chan struct{})
-	c.writeQueue = make(chan writeMsg, c.options.BufferQueueSize)
 	c.closeOnce = sync.Once{}
 	c.paused = false
 	c.mu.Unlock()
@@ -137,9 +133,25 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 	connCtx, cancel := context.WithTimeout(ctx, c.options.ConnectTimeout)
 	defer cancel()
 
-	// Connect to WebSocket
+	// Connect to WebSocket with TCP_NODELAY and TLS session cache
 	dialer := websocket.Dialer{
 		HandshakeTimeout: c.options.ConnectTimeout,
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := net.Dialer{}
+			conn, err := d.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			// TCP_NODELAY disables Nagle's algorithm — each write goes to the
+			// wire immediately instead of being buffered up to 40ms.
+			if tc, ok := conn.(*net.TCPConn); ok {
+				tc.SetNoDelay(true)
+			}
+			return conn, nil
+		},
+		TLSClientConfig: &tls.Config{
+			ClientSessionCache: c.tlsCache,
+		},
 	}
 
 	conn, _, err := dialer.DialContext(connCtx, c.options.WebSocketURL, http.Header{})
@@ -152,7 +164,7 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 	c.conn = conn
 	c.mu.Unlock()
 
-	// Send initial configuration (safe: writeLoop hasn't started yet)
+	// Send initial configuration — direct write, no goroutines running yet
 	request := c.sessionOptions.toRequest(apiKey)
 	configData, err := json.Marshal(request)
 	if err != nil {
@@ -168,7 +180,7 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 		return err
 	}
 
-	// Send any queued messages (safe: writeLoop hasn't started yet)
+	// Send any queued messages — direct write, still single-threaded
 	c.mu.Lock()
 	for _, msg := range c.messageQueue {
 		conn.SetWriteDeadline(time.Now().Add(c.options.WriteTimeout))
@@ -189,8 +201,8 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 		cb()
 	}
 
-	// Start background goroutines
-	go c.writeLoop()
+	// Start background goroutines — only readLoop and keepAliveLoop.
+	// No writeLoop needed: all writes go through writeMu directly.
 	go c.readLoop()
 	go c.keepAliveLoop()
 
@@ -217,7 +229,7 @@ func (c *Client) getAPIKey() (string, error) {
 
 // SendAudio sends audio data to the transcription service.
 // If the client is paused, audio is silently dropped.
-// The audio should be in the format specified in SessionOptions.
+// Writes go directly to the WebSocket (no channel hop) for minimum latency.
 func (c *Client) SendAudio(data []byte) error {
 	c.mu.RLock()
 	state := c.state
@@ -241,12 +253,7 @@ func (c *Client) SendAudio(data []byte) error {
 		return nil
 
 	case StateRunning:
-		select {
-		case c.writeQueue <- writeMsg{data: data, msgType: websocket.BinaryMessage}:
-			return nil
-		default:
-			return NewError(ErrorStatusQueueLimitExceeded, "write queue full")
-		}
+		return c.writeRaw(websocket.BinaryMessage, data)
 
 	default:
 		return NewError(ErrorStatusInvalidState, "cannot send audio in state: "+string(state))
@@ -308,14 +315,21 @@ func (c *Client) Resume() {
 }
 
 // Finalize triggers manual finalization of non-final tokens.
-// The message is sent through the write queue to ensure serialized writes.
-func (c *Client) Finalize() error {
-	return c.sendControl(NewFinalizeMessage())
+// Optionally pass FinalizeOptions to specify trailing silence milliseconds.
+// If the client is not in Running or Finishing state, the call is silently ignored.
+func (c *Client) Finalize(opts ...FinalizeOptions) error {
+	c.mu.RLock()
+	state := c.state
+	c.mu.RUnlock()
+
+	if state != StateRunning && state != StateFinishing {
+		return nil
+	}
+
+	return c.sendControl(NewFinalizeMessage(opts...))
 }
 
 // Stop gracefully stops the transcription session, waiting for final results.
-// It sends an end-of-audio signal and the server will process any remaining
-// buffered audio before sending the final result with Finished=true.
 func (c *Client) Stop() error {
 	c.mu.RLock()
 	state := c.state
@@ -335,14 +349,8 @@ func (c *Client) Stop() error {
 
 		c.setState(StateFinishing)
 
-		// Send empty text message through the write queue to signal end of audio.
-		// This ensures serialized writes with other messages.
-		select {
-		case c.writeQueue <- writeMsg{data: []byte{}, msgType: websocket.TextMessage}:
-			return nil
-		case <-c.done:
-			return ErrClientClosed
-		}
+		// Send empty text message directly to signal end of audio stream
+		return c.writeRaw(websocket.TextMessage, []byte{})
 	}
 
 	return nil
@@ -360,19 +368,34 @@ func (c *Client) Cancel() {
 	}
 }
 
-// sendControl sends a JSON control message through the write queue.
-// It blocks until the message is queued or the session is closed.
+// writeRaw writes a message directly to the WebSocket, serialized by writeMu.
+// This is the hot path — no channels, no goroutine hops, just mutex + syscall.
+func (c *Client) writeRaw(msgType int, data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return ErrClientNotConnected
+	}
+
+	conn.SetWriteDeadline(time.Now().Add(c.options.WriteTimeout))
+	if err := conn.WriteMessage(msgType, data); err != nil {
+		return NewErrorWithCause(ErrorStatusWebSocketError, "write error", err)
+	}
+	return nil
+}
+
+// sendControl sends a JSON control message directly to the WebSocket.
 func (c *Client) sendControl(v interface{}) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	select {
-	case c.writeQueue <- writeMsg{data: data, msgType: websocket.TextMessage}:
-		return nil
-	case <-c.done:
-		return ErrClientClosed
-	}
+	return c.writeRaw(websocket.TextMessage, data)
 }
 
 // readLoop reads messages from the WebSocket.
@@ -432,38 +455,6 @@ func (c *Client) readLoop() {
 	}
 }
 
-// writeLoop is the sole goroutine that writes to the WebSocket after Start().
-// All messages (audio binary, JSON control, stop signal) are routed through
-// the writeQueue to eliminate concurrent write races on the WebSocket connection.
-func (c *Client) writeLoop() {
-	for {
-		select {
-		case <-c.done:
-			return
-		case msg, ok := <-c.writeQueue:
-			if !ok {
-				return
-			}
-
-			c.mu.RLock()
-			conn := c.conn
-			c.mu.RUnlock()
-
-			if conn == nil {
-				return
-			}
-
-			// No mutex needed around WriteMessage: writeLoop is the sole writer
-			// after Start() completes. All other code paths send through writeQueue.
-			conn.SetWriteDeadline(time.Now().Add(c.options.WriteTimeout))
-			if err := conn.WriteMessage(msg.msgType, msg.data); err != nil {
-				c.handleError(NewErrorWithCause(ErrorStatusWebSocketError, "write error", err))
-				return
-			}
-		}
-	}
-}
-
 // keepAliveLoop sends keep-alive messages at regular intervals.
 // Messages are sent when KeepAlive is enabled or when the client is paused.
 func (c *Client) keepAliveLoop() {
@@ -486,12 +477,8 @@ func (c *Client) keepAliveLoop() {
 				continue
 			}
 
-			data, _ := json.Marshal(NewKeepAliveMessage())
-			// Non-blocking send: skip this tick if the queue is full
-			select {
-			case c.writeQueue <- writeMsg{data: data, msgType: websocket.TextMessage}:
-			default:
-			}
+			// Best-effort: ignore errors on keepalive
+			c.sendControl(NewKeepAliveMessage())
 		}
 	}
 }
@@ -531,7 +518,7 @@ func (c *Client) closeConnection() {
 // It is safe to call from multiple goroutines; only the first call takes effect.
 func (c *Client) closeResources() {
 	c.closeOnce.Do(func() {
-		// Signal all goroutines (writeLoop, keepAliveLoop, context monitor) to stop
+		// Signal all goroutines (keepAliveLoop, context monitor) to stop
 		if c.done != nil {
 			close(c.done)
 		}

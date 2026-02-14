@@ -663,6 +663,79 @@ func TestFinalizeMessage(t *testing.T) {
 	}
 }
 
+func TestFinalizeWithTrailingSilence(t *testing.T) {
+	// Verify JSON serialization includes trailing_silence_ms
+	msg := NewFinalizeMessage(FinalizeOptions{TrailingSilenceMs: 500})
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"trailing_silence_ms":500`) {
+		t.Errorf("expected trailing_silence_ms in JSON, got: %s", s)
+	}
+
+	// Without options, trailing_silence_ms should be omitted
+	msg2 := NewFinalizeMessage()
+	data2, _ := json.Marshal(msg2)
+	if strings.Contains(string(data2), "trailing_silence_ms") {
+		t.Errorf("trailing_silence_ms should be omitted when not set, got: %s", string(data2))
+	}
+}
+
+func TestFinalizeIgnoredWhenNotActive(t *testing.T) {
+	client := NewClient(ClientOptions{})
+
+	// Client is in Init state — Finalize should be silently ignored
+	err := client.Finalize()
+	if err != nil {
+		t.Fatalf("Finalize in Init state should not error, got: %v", err)
+	}
+
+	err = client.Finalize(FinalizeOptions{TrailingSilenceMs: 300})
+	if err != nil {
+		t.Fatalf("Finalize with opts in Init state should not error, got: %v", err)
+	}
+}
+
+func TestFinalizeWithTrailingSilenceIntegration(t *testing.T) {
+	wsURL := startMockServer(t)
+
+	done := make(chan struct{})
+	client := NewClient(ClientOptions{
+		APIKey:       "test-key",
+		WebSocketURL: wsURL,
+	})
+	defer client.Close()
+
+	ctx := context.Background()
+	err := client.Start(ctx, SessionOptions{
+		OnFinished: func() {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Finalize with trailing silence option
+	err = client.Finalize(FinalizeOptions{TrailingSilenceMs: 200})
+	if err != nil {
+		t.Fatalf("Finalize with trailing silence failed: %v", err)
+	}
+
+	err = client.Stop()
+	if err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for OnFinished")
+	}
+}
+
 func TestErrorCallback(t *testing.T) {
 	// Server that returns an API error
 	upgrader := websocket.Upgrader{

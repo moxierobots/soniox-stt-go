@@ -160,7 +160,16 @@ type Response struct {
 
 // FinalizeMessage is sent to trigger manual finalization.
 type FinalizeMessage struct {
-	Type string `json:"type"`
+	Type              string `json:"type"`
+	TrailingSilenceMs *int   `json:"trailing_silence_ms,omitempty"`
+}
+
+// FinalizeOptions configures the Finalize request.
+type FinalizeOptions struct {
+	// TrailingSilenceMs specifies the amount of trailing silence (in milliseconds)
+	// to append before finalizing. This allows the server to capture any remaining
+	// speech that may not yet have been finalized.
+	TrailingSilenceMs int
 }
 
 // KeepAliveMessage is sent to maintain the connection during silence.
@@ -169,8 +178,13 @@ type KeepAliveMessage struct {
 }
 
 // NewFinalizeMessage creates a new finalize message.
-func NewFinalizeMessage() FinalizeMessage {
-	return FinalizeMessage{Type: "finalize"}
+func NewFinalizeMessage(opts ...FinalizeOptions) FinalizeMessage {
+	msg := FinalizeMessage{Type: "finalize"}
+	if len(opts) > 0 && opts[0].TrailingSilenceMs > 0 {
+		v := opts[0].TrailingSilenceMs
+		msg.TrailingSilenceMs = &v
+	}
+	return msg
 }
 
 // NewKeepAliveMessage creates a new keep-alive message.
