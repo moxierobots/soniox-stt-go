@@ -31,3 +31,6 @@ Thumbs.db
 # Build output
 bin/
 dist/
+
+# Benchmarks (contain API keys and node_modules)
+bench/
