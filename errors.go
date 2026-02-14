@@ -15,8 +15,20 @@ const (
 	// ErrorStatusQueueLimitExceeded indicates the message queue limit was exceeded.
 	ErrorStatusQueueLimitExceeded ErrorStatus = "queue_limit_exceeded"
 
-	// ErrorStatusAPIError indicates an error returned by the Soniox API.
+	// ErrorStatusAPIError indicates a generic error returned by the Soniox API.
 	ErrorStatusAPIError ErrorStatus = "api_error"
+
+	// ErrorStatusAuthError indicates an authentication error (HTTP 401).
+	ErrorStatusAuthError ErrorStatus = "auth_error"
+
+	// ErrorStatusBadRequest indicates a bad request error (HTTP 400).
+	ErrorStatusBadRequest ErrorStatus = "bad_request"
+
+	// ErrorStatusQuotaExceeded indicates a quota or rate limit error (HTTP 402, 429).
+	ErrorStatusQuotaExceeded ErrorStatus = "quota_exceeded"
+
+	// ErrorStatusNetworkError indicates a server-side network error (HTTP 408, 500, 503).
+	ErrorStatusNetworkError ErrorStatus = "network_error"
 
 	// ErrorStatusWebSocketError indicates a WebSocket communication error.
 	ErrorStatusWebSocketError ErrorStatus = "websocket_error"
@@ -102,3 +114,28 @@ var (
 	// ErrClientClosed is returned when operating on a closed client.
 	ErrClientClosed = NewError(ErrorStatusInvalidState, "client is closed")
 )
+
+// MapAPIError maps an API error response to a typed Error with the appropriate
+// ErrorStatus based on the HTTP status code, matching the Soniox Node.js SDK behavior.
+//
+//   - 401 → ErrorStatusAuthError
+//   - 400 → ErrorStatusBadRequest
+//   - 402, 429 → ErrorStatusQuotaExceeded
+//   - 408, 500, 503 → ErrorStatusNetworkError
+//   - other → ErrorStatusAPIError
+func MapAPIError(message string, code int) *Error {
+	var status ErrorStatus
+	switch code {
+	case 401:
+		status = ErrorStatusAuthError
+	case 400:
+		status = ErrorStatusBadRequest
+	case 402, 429:
+		status = ErrorStatusQuotaExceeded
+	case 408, 500, 503:
+		status = ErrorStatusNetworkError
+	default:
+		status = ErrorStatusAPIError
+	}
+	return NewErrorWithCode(status, message, code)
+}

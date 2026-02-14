@@ -23,7 +23,8 @@ type Client struct {
 	state        State
 	paused       bool
 	conn         *websocket.Conn
-	messageQueue [][]byte
+	messageQueue [][]byte   // queued binary (audio) messages during Connecting
+	controlQueue [][]byte   // queued text (control) messages during Connecting
 	done         chan struct{}
 	closeOnce    sync.Once
 	tlsCache     tls.ClientSessionCache // reused across sessions for faster TLS resumption
@@ -103,6 +104,34 @@ func (c *Client) getOnError() func(*Error) {
 	return c.options.OnError
 }
 
+func (c *Client) getOnToken() func(Token) {
+	if c.sessionOptions != nil && c.sessionOptions.OnToken != nil {
+		return c.sessionOptions.OnToken
+	}
+	return c.options.OnToken
+}
+
+func (c *Client) getOnEndpoint() func() {
+	if c.sessionOptions != nil && c.sessionOptions.OnEndpoint != nil {
+		return c.sessionOptions.OnEndpoint
+	}
+	return c.options.OnEndpoint
+}
+
+func (c *Client) getOnFinalized() func() {
+	if c.sessionOptions != nil && c.sessionOptions.OnFinalized != nil {
+		return c.sessionOptions.OnFinalized
+	}
+	return c.options.OnFinalized
+}
+
+func (c *Client) getOnDisconnected() func(string) {
+	if c.sessionOptions != nil && c.sessionOptions.OnDisconnected != nil {
+		return c.sessionOptions.OnDisconnected
+	}
+	return c.options.OnDisconnected
+}
+
 // Start begins a transcription session with the given options.
 // The provided context controls the session lifetime: cancelling it will
 // close the WebSocket connection and set the state to Canceled.
@@ -115,6 +144,7 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 	c.sessionOptions = &sessionOpts
 	c.sessionOptions.applyDefaults()
 	c.messageQueue = make([][]byte, 0, c.options.BufferQueueSize)
+	c.controlQueue = nil
 	c.done = make(chan struct{})
 	c.closeOnce = sync.Once{}
 	c.paused = false
@@ -182,6 +212,7 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 
 	// Send any queued messages — direct write, still single-threaded
 	c.mu.Lock()
+	// Flush queued audio (binary) messages
 	for _, msg := range c.messageQueue {
 		conn.SetWriteDeadline(time.Now().Add(c.options.WriteTimeout))
 		if err := conn.WriteMessage(websocket.BinaryMessage, msg); err != nil {
@@ -192,6 +223,17 @@ func (c *Client) Start(ctx context.Context, sessionOpts SessionOptions) error {
 		}
 	}
 	c.messageQueue = nil
+	// Flush queued control (text) messages (e.g., finalize queued during Connecting)
+	for _, msg := range c.controlQueue {
+		conn.SetWriteDeadline(time.Now().Add(c.options.WriteTimeout))
+		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			c.mu.Unlock()
+			c.handleError(NewErrorWithCause(ErrorStatusWebSocketError, "failed to send queued control message", err))
+			c.closeConnection()
+			return err
+		}
+	}
+	c.controlQueue = nil
 	c.mu.Unlock()
 
 	c.setState(StateRunning)
@@ -316,17 +358,37 @@ func (c *Client) Resume() {
 
 // Finalize triggers manual finalization of non-final tokens.
 // Optionally pass FinalizeOptions to specify trailing silence milliseconds.
-// If the client is not in Running or Finishing state, the call is silently ignored.
+// During Connecting state, the finalize message is queued and sent after connection.
+// In other inactive states, the call is silently ignored.
 func (c *Client) Finalize(opts ...FinalizeOptions) error {
 	c.mu.RLock()
 	state := c.state
 	c.mu.RUnlock()
 
-	if state != StateRunning && state != StateFinishing {
+	switch state {
+	case StateConnecting:
+		// Queue the finalize message for sending after connection is established
+		data, err := json.Marshal(NewFinalizeMessage(opts...))
+		if err != nil {
+			return err
+		}
+		c.mu.Lock()
+		if len(c.messageQueue) >= c.options.BufferQueueSize {
+			c.mu.Unlock()
+			return NewError(ErrorStatusQueueLimitExceeded, "message queue limit exceeded")
+		}
+		// Use nil as a sentinel: controlMessages are text, audio is binary.
+		// We store the JSON bytes and send them as text in Start().
+		c.controlQueue = append(c.controlQueue, data)
+		c.mu.Unlock()
+		return nil
+
+	case StateRunning, StateFinishing:
+		return c.sendControl(NewFinalizeMessage(opts...))
+
+	default:
 		return nil
 	}
-
-	return c.sendControl(NewFinalizeMessage(opts...))
 }
 
 // Stop gracefully stops the transcription session, waiting for final results.
@@ -399,15 +461,22 @@ func (c *Client) sendControl(v interface{}) error {
 }
 
 // readLoop reads messages from the WebSocket.
+// Matches the Node.js SDK handleMessage behavior:
+// 1. Parse response, check for API errors (with typed error mapping)
+// 2. Detect <end> and <fin> special tokens BEFORE filtering
+// 3. Filter special tokens from user-facing result
+// 4. Emit individual token callbacks
+// 5. Emit result callback with filtered tokens
+// 6. Emit endpoint/finalized callbacks
+// 7. Handle finished response
 func (c *Client) readLoop() {
-	defer c.closeResources()
-
 	for {
 		c.mu.RLock()
 		conn := c.conn
 		c.mu.RUnlock()
 
 		if conn == nil {
+			// Connection already closed (e.g., by closeResources)
 			return
 		}
 
@@ -417,9 +486,30 @@ func (c *Client) readLoop() {
 			state := c.state
 			c.mu.RUnlock()
 
-			if state == StateRunning || state == StateConnecting {
-				c.handleError(NewErrorWithCause(ErrorStatusWebSocketError, "read error", err))
+			// If already in a terminal state, just exit silently
+			if state.IsTerminal() {
+				return
 			}
+
+			// Match Node.js handleClose: if finishing, it's an error (closed before finished).
+			// Otherwise, transition to Closed state.
+			if state == StateFinishing {
+				connErr := NewErrorWithCause(ErrorStatusConnectionClosed, "WebSocket closed before finished response", err)
+				c.handleError(connErr)
+				return
+			}
+
+			if state == StateRunning || state == StateConnecting {
+				// Emit disconnected callback, then transition to Closed
+				if cb := c.getOnDisconnected(); cb != nil {
+					cb("")
+				}
+				c.closeResources()
+				c.setState(StateClosed)
+				return
+			}
+
+			// Any other state — just exit
 			return
 		}
 
@@ -429,22 +519,47 @@ func (c *Client) readLoop() {
 			return
 		}
 
-		// Check for API error
+		// Check for API error — use typed error mapping matching Node.js mapErrorResponse
 		if response.ErrorCode != nil || response.ErrorMessage != "" {
 			code := 0
 			if response.ErrorCode != nil {
 				code = *response.ErrorCode
 			}
-			c.handleError(NewErrorWithCode(ErrorStatusAPIError, response.ErrorMessage, code))
+			c.handleError(MapAPIError(response.ErrorMessage, code))
 			return
 		}
 
-		// Filter special control tokens before delivering to user
+		// Detect special control tokens BEFORE filtering (matching Node.js handleMessage)
+		hasEndpoint := hasSpecialToken(response.Tokens, "<end>")
+		hasFinalized := hasSpecialToken(response.Tokens, "<fin>")
+
+		// Filter special tokens for user-facing events
 		response.Tokens = filterSpecialTokens(response.Tokens)
 
-		// Call result callback
+		// Emit individual token callbacks
+		if cb := c.getOnToken(); cb != nil {
+			for _, tok := range response.Tokens {
+				cb(tok)
+			}
+		}
+
+		// Call result callback with filtered tokens
 		if cb := c.getOnResult(); cb != nil {
 			cb(&response)
+		}
+
+		// Emit endpoint event (speaker finished an utterance)
+		if hasEndpoint {
+			if cb := c.getOnEndpoint(); cb != nil {
+				cb()
+			}
+		}
+
+		// Emit finalized event (manual finalization confirmed by server)
+		if hasFinalized {
+			if cb := c.getOnFinalized(); cb != nil {
+				cb()
+			}
 		}
 
 		// Check if finished
@@ -526,9 +641,10 @@ func (c *Client) closeResources() {
 		// Close the WebSocket connection (causes readLoop to get an error and return)
 		c.closeConnection()
 
-		// Clear message queue
+		// Clear message queues
 		c.mu.Lock()
 		c.messageQueue = nil
+		c.controlQueue = nil
 		c.mu.Unlock()
 	})
 }
@@ -537,6 +653,17 @@ func (c *Client) closeResources() {
 func (c *Client) Close() error {
 	c.Cancel()
 	return nil
+}
+
+// hasSpecialToken checks if any token in the list has the given text.
+// Used to detect <end> and <fin> control tokens before filtering.
+func hasSpecialToken(tokens []Token, text string) bool {
+	for i := range tokens {
+		if tokens[i].Text == text {
+			return true
+		}
+	}
+	return false
 }
 
 // filterSpecialTokens removes control tokens (<end>, <fin>) from the token list.

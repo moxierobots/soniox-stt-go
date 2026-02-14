@@ -88,6 +88,11 @@ type Request struct {
 	// EnableEndpointDetection enables endpoint detection to finalize tokens faster.
 	EnableEndpointDetection bool `json:"enable_endpoint_detection,omitempty"`
 
+	// MaxEndpointDelayMs sets the maximum endpoint detection delay in milliseconds.
+	// Must be between 500 and 3000. Default is 2000.
+	// Only used when EnableEndpointDetection is true.
+	MaxEndpointDelayMs int `json:"max_endpoint_delay_ms,omitempty"`
+
 	// ClientReferenceID is an optional client-defined identifier for tracking.
 	ClientReferenceID string `json:"client_reference_id,omitempty"`
 

@@ -24,6 +24,10 @@ const (
 
 	// StateCanceled indicates the transcription was canceled by the user.
 	StateCanceled State = "Canceled"
+
+	// StateClosed indicates the WebSocket connection was closed unexpectedly
+	// (e.g., server closed the connection without sending a finished response).
+	StateClosed State = "Closed"
 )
 
 // IsActive returns true if the state indicates an active transcription session.
@@ -39,7 +43,7 @@ func (s State) IsActive() bool {
 // IsInactive returns true if the state indicates an inactive transcription session.
 func (s State) IsInactive() bool {
 	switch s {
-	case StateInit, StateFinished, StateError, StateCanceled:
+	case StateInit, StateFinished, StateError, StateCanceled, StateClosed:
 		return true
 	default:
 		return false
@@ -59,7 +63,7 @@ func (s State) IsWebSocketActive() bool {
 // IsTerminal returns true if the state is a terminal state that cannot transition further.
 func (s State) IsTerminal() bool {
 	switch s {
-	case StateFinished, StateError, StateCanceled:
+	case StateFinished, StateError, StateCanceled, StateClosed:
 		return true
 	default:
 		return false

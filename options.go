@@ -74,10 +74,27 @@ type ClientOptions struct {
 	OnStarted func()
 
 	// OnResult is called when transcription results are received.
+	// Tokens are filtered: special control tokens (<end>, <fin>) are removed.
 	OnResult func(response *Response)
+
+	// OnToken is called for each individual non-special token received.
+	OnToken func(token Token)
+
+	// OnEndpoint is called when an endpoint is detected (<end> token).
+	// This indicates the speaker has finished an utterance.
+	// Critical for voice-agent and push-to-talk workflows.
+	OnEndpoint func()
+
+	// OnFinalized is called when manual finalization completes (<fin> token).
+	// This confirms that a prior Finalize() call has been processed by the server.
+	OnFinalized func()
 
 	// OnFinished is called when the transcription session finishes.
 	OnFinished func()
+
+	// OnDisconnected is called when the WebSocket connection is closed.
+	// The reason string may be empty.
+	OnDisconnected func(reason string)
 
 	// OnError is called when an error occurs.
 	OnError func(err *Error)
@@ -117,6 +134,11 @@ type SessionOptions struct {
 	// EnableEndpointDetection enables automatic endpoint detection.
 	EnableEndpointDetection bool
 
+	// MaxEndpointDelayMs sets the maximum endpoint detection delay in milliseconds.
+	// Must be between 500 and 3000. Default is 2000.
+	// Only used when EnableEndpointDetection is true.
+	MaxEndpointDelayMs int
+
 	// ClientReferenceID is an optional client-defined identifier.
 	ClientReferenceID string
 
@@ -132,8 +154,20 @@ type SessionOptions struct {
 	// OnResult overrides the client's OnResult callback for this session.
 	OnResult func(response *Response)
 
+	// OnToken overrides the client's OnToken callback for this session.
+	OnToken func(token Token)
+
+	// OnEndpoint overrides the client's OnEndpoint callback for this session.
+	OnEndpoint func()
+
+	// OnFinalized overrides the client's OnFinalized callback for this session.
+	OnFinalized func()
+
 	// OnFinished overrides the client's OnFinished callback for this session.
 	OnFinished func()
+
+	// OnDisconnected overrides the client's OnDisconnected callback for this session.
+	OnDisconnected func(reason string)
 
 	// OnError overrides the client's OnError callback for this session.
 	OnError func(err *Error)
@@ -182,6 +216,7 @@ func (o *SessionOptions) toRequest(apiKey string) *Request {
 		EnableSpeakerDiarization:     o.EnableSpeakerDiarization,
 		EnableLanguageIdentification: o.EnableLanguageIdentification,
 		EnableEndpointDetection:      o.EnableEndpointDetection,
+		MaxEndpointDelayMs:           o.MaxEndpointDelayMs,
 		ClientReferenceID:            o.ClientReferenceID,
 		Translation:                  o.Translation,
 	}
