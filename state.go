@@ -56,6 +56,16 @@ func (s State) IsWebSocketActive() bool {
 	}
 }
 
+// IsTerminal returns true if the state is a terminal state that cannot transition further.
+func (s State) IsTerminal() bool {
+	switch s {
+	case StateFinished, StateError, StateCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
 // String returns the string representation of the state.
 func (s State) String() string {
 	return string(s)

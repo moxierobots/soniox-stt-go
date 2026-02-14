@@ -73,6 +73,9 @@ type Request struct {
 	// LanguageHints provides hints about expected languages to improve accuracy.
 	LanguageHints []string `json:"language_hints,omitempty"`
 
+	// LanguageHintsStrict enforces strict adherence to language hints.
+	LanguageHintsStrict bool `json:"language_hints_strict,omitempty"`
+
 	// Context provides domain-specific context to improve recognition.
 	Context *Context `json:"context,omitempty"`
 
@@ -136,9 +139,6 @@ type Token struct {
 
 // Response represents a response from the Speech-to-Text API.
 type Response struct {
-	// Text is the complete transcribed text.
-	Text string `json:"text"`
-
 	// Tokens contains individual recognized tokens with metadata.
 	Tokens []Token `json:"tokens"`
 

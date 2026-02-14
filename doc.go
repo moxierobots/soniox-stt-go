@@ -26,7 +26,7 @@
 //	})
 //
 //	err := client.Start(ctx, soniox.SessionOptions{
-//	    Model: "stt-rt-preview",
+//	    Model: "stt-rt-v4",
 //	    EnableSpeakerDiarization: true,
 //	})
 //
@@ -41,9 +41,9 @@
 // The SDK supports various audio formats:
 //
 //   - "auto": Automatically detect format (recommended for most cases)
-//   - "s16le": 16-bit signed little-endian PCM
-//   - "f32le": 32-bit float little-endian PCM
-//   - Other formats as supported by the Soniox API
+//   - "pcm_s16le": 16-bit signed little-endian PCM
+//   - "pcm_f32le": 32-bit float little-endian PCM
+//   - Other formats as supported by the Soniox API (wav, mp3, flac, ogg, etc.)
 //
 // For raw PCM formats, you must specify SampleRate and NumChannels.
 //

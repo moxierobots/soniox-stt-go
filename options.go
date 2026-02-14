@@ -19,10 +19,13 @@ const (
 	DefaultWriteTimeout = 10 * time.Second
 
 	// DefaultModel is the default speech-to-text model.
-	DefaultModel = "stt-rt-preview"
+	DefaultModel = "stt-rt-v4"
 
 	// DefaultAudioFormat is the default audio format.
 	DefaultAudioFormat = "auto"
+
+	// DefaultStreamChunkSize is the default chunk size in bytes for SendStream.
+	DefaultStreamChunkSize = 4096
 )
 
 // APIKeyFunc is a function that returns an API key.
@@ -99,6 +102,9 @@ type SessionOptions struct {
 	// LanguageHints provides hints about expected languages.
 	LanguageHints []string
 
+	// LanguageHintsStrict enforces strict adherence to language hints.
+	LanguageHintsStrict bool
+
 	// Context provides domain-specific context for improved accuracy.
 	Context *Context
 
@@ -171,6 +177,7 @@ func (o *SessionOptions) toRequest(apiKey string) *Request {
 		SampleRate:                   o.SampleRate,
 		NumChannels:                  o.NumChannels,
 		LanguageHints:                o.LanguageHints,
+		LanguageHintsStrict:          o.LanguageHintsStrict,
 		Context:                      o.Context,
 		EnableSpeakerDiarization:     o.EnableSpeakerDiarization,
 		EnableLanguageIdentification: o.EnableLanguageIdentification,
@@ -178,4 +185,18 @@ func (o *SessionOptions) toRequest(apiKey string) *Request {
 		ClientReferenceID:            o.ClientReferenceID,
 		Translation:                  o.Translation,
 	}
+}
+
+// SendStreamOptions configures the behavior of Client.SendStream.
+type SendStreamOptions struct {
+	// ChunkSize is the number of bytes to read per chunk.
+	// Default: DefaultStreamChunkSize (4096)
+	ChunkSize int
+
+	// PaceInterval is the delay between sending chunks.
+	// Zero means no pacing (send as fast as possible).
+	PaceInterval time.Duration
+
+	// Finish calls Stop() after the entire stream has been sent.
+	Finish bool
 }
