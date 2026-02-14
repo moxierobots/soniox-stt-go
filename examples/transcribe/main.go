@@ -23,7 +23,7 @@ import (
 func main() {
 	apiKey := flag.String("api-key", "", "Soniox API key")
 	audioFile := flag.String("file", "", "Audio file to transcribe")
-	model := flag.String("model", "stt-rt-preview", "Model to use")
+	model := flag.String("model", "stt-rt-v4", "Model to use")
 	languages := flag.String("languages", "", "Comma-separated language hints (e.g., en,es)")
 	enableDiarization := flag.Bool("diarization", false, "Enable speaker diarization")
 	enableLangID := flag.Bool("lang-id", false, "Enable language identification")

@@ -27,7 +27,7 @@ import (
 func main() {
 	apiKey := flag.String("api-key", "", "Soniox API key")
 	audioFile := flag.String("file", "", "Audio file to transcribe")
-	model := flag.String("model", "stt-rt-preview", "Model to use")
+	model := flag.String("model", "stt-rt-v4", "Model to use")
 	targetLang := flag.String("target", "", "Target language for one-way translation")
 	langA := flag.String("lang-a", "", "Language A for two-way translation")
 	langB := flag.String("lang-b", "", "Language B for two-way translation")

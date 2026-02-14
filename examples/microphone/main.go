@@ -33,7 +33,7 @@ import (
 
 func main() {
 	apiKey := flag.String("api-key", "", "Soniox API key")
-	model := flag.String("model", "stt-rt-preview", "Model to use")
+	model := flag.String("model", "stt-rt-v4", "Model to use")
 	flag.Parse()
 
 	if *apiKey == "" {
@@ -67,7 +67,7 @@ func main() {
 	// Prepare session options
 	sessionOpts := soniox.SessionOptions{
 		Model:                        *model,
-		AudioFormat:                  "s16le", // 16-bit signed little-endian PCM
+		AudioFormat:                  "pcm_s16le", // 16-bit signed little-endian PCM
 		SampleRate:                   16000,
 		NumChannels:                  1,
 		EnableSpeakerDiarization:     true,

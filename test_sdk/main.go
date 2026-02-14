@@ -47,6 +47,7 @@ func transcribeFile(apiKey, filepath string) error {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
+	var wgOnce sync.Once
 
 	var finalText string
 	var transcribeErr error
@@ -59,22 +60,18 @@ func transcribeFile(apiKey, filepath string) error {
 		OnError: func(err *soniox.Error) {
 			log.Printf("Error: %v", err)
 			transcribeErr = err
-			wg.Done()
+			wgOnce.Do(wg.Done)
 		},
 	})
 	defer client.Close()
 
 	sessionOpts := soniox.SessionOptions{
-		Model:                        "stt-rt-preview",
+		Model:                        "stt-rt-v4",
 		AudioFormat:                  "auto",
 		EnableLanguageIdentification: true,
 		EnableEndpointDetection:      true,
 		OnResult: func(response *soniox.Response) {
 			for _, token := range response.Tokens {
-				// Skip endpoint detection markers
-				if token.Text == "<end>" {
-					continue
-				}
 				if token.IsFinal {
 					finalText += token.Text
 					fmt.Print(token.Text)
@@ -83,7 +80,7 @@ func transcribeFile(apiKey, filepath string) error {
 		},
 		OnFinished: func() {
 			log.Println("Transcription finished")
-			wg.Done()
+			wgOnce.Do(wg.Done)
 		},
 	}
 
