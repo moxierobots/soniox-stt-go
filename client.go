@@ -313,11 +313,17 @@ func (c *Client) SendStream(r io.Reader, opts ...SendStreamOptions) error {
 	return nil
 }
 
-// Pause pauses audio transmission.
+// Pause pauses audio transmission and finalizes any pending non-final tokens.
 func (c *Client) Pause() {
 	c.mu.Lock()
+	if c.paused {
+		c.mu.Unlock()
+		return
+	}
 	c.paused = true
 	c.mu.Unlock()
+
+	c.Finalize()
 }
 
 // Resume resumes audio transmission.
