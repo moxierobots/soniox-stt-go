@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -450,7 +451,8 @@ func (c *Client) readLoop() {
 
 			if state == StateRunning || state == StateConnecting {
 				if cb := c.getOnDisconnected(); cb != nil {
-					cb("")
+					reason := formatDisconnectReason(err)
+					cb(reason)
 				}
 				c.closeResources()
 				c.setState(StateClosed)
@@ -580,6 +582,18 @@ func (c *Client) closeResources() {
 func (c *Client) Close() error {
 	c.Cancel()
 	return nil
+}
+
+// formatDisconnectReason extracts a human-readable reason from a WebSocket read error,
+// including the close code when the server sends a close frame.
+func formatDisconnectReason(err error) string {
+	if closeErr, ok := err.(*websocket.CloseError); ok {
+		return fmt.Sprintf("close_code=%d close_text=%q", closeErr.Code, closeErr.Text)
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "unknown"
 }
 
 func hasSpecialToken(tokens []Token, text string) bool {
